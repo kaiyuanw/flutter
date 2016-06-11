@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert' show JSON;
 import 'dart:io' as io;
 
 import 'package:path/path.dart' as path;
@@ -41,11 +42,21 @@ class MultiDriveCommand extends RunCommandBase {
         'the application running after tests are done.'
     );
 
-    argParser.addOption('debug-ports',
-      defaultsTo: kDefaultMultiDrivePort,
-      allowMultiple: true,
-      help: 'Listen to a list of ports for a debug connection.'
+    argParser.addOption(
+      'specs',
+      defaultsTo: null,
+      allowMultiple: false,
+      help:
+        'Config file that specifies the devices, apps and debug-ports for testing.'
     );
+
+    // argParser.addOption(
+    //   'debug-ports',
+    //   defaultsTo: kDefaultMultiDrivePort,
+    //   allowMultiple: true,
+    //   splitCommas: true,
+    //   help: 'Listen to a list of ports for a debug connection.'
+    // );
   }
 
   @override
@@ -57,25 +68,28 @@ class MultiDriveCommand extends RunCommandBase {
   @override
   final List<String> aliases = <String>['multi-driver'];
 
-  Device _device;
-  Device get device => _device;
+  List<Device> _devices;
+  List<Device> get devices => _devices;
 
-  List<int> get debugPorts =>
-    argResults['debug-ports']
-    .split(',')
-    .foreach((String port) => int.parse(port));//int.parse(argResults['debug-port']);
+  dynamic specs;
+
+  // List<int> get debugPorts =>
+  //   argResults['debug-ports']
+  //   .split(',')
+  //   .foreach((String port) => int.parse(port));
 
   @override
   Future<int> runInProject() async {
-    String testFile = _getTestFile();
-    if (testFile == null) {
+    String specsPath = argResults['specs'];
+    this.specs = await _loadSpecs(specsPath);
+    print(specs);
+
+    this._devices = await targetDevicesFinder();
+    if (devices == null) {
       return 1;
     }
 
-    this._device = await targetDevicesFinder();
-    if (device == null) {
-      return 1;
-    }
+    String testFile = specs['test-path'];
 
     if (await fs.type(testFile) != FileSystemEntityType.FILE) {
       printError('Test file not found: $testFile');
@@ -136,95 +150,54 @@ class MultiDriveCommand extends RunCommandBase {
     }
   }
 
-  String _getTestFile() {
-    String appFile = path.normalize(target);
+  Future<dynamic> _loadSpecs(String specsPath) async {
+    // Read specs file into json format
+    dynamic spec = JSON.decode(await new io.File(specsPath).readAsString());
+    // Get the parent directory of the specs file
+    String rootPath = new io.File(specsPath).parent.absolute.path;
+    // Normalize the 'test-path' in the specs file
+    spec['test-path'] = _normalizePath(rootPath, spec['test-path']);
+    // Normalize the 'app-path' in the specs file
+    spec['devices'].forEach((String deviceID, Map<String, String> value) {
+      value['app-path'] = _normalizePath(rootPath, value['app-path']);
+    });
+    return spec;
+  }
 
-    // This command extends `flutter start` and therefore CWD == package dir
-    String packageDir = getCurrentDirectory();
-
-    // Make appFile path relative to package directory because we are looking
-    // for the corresponding test file relative to it.
-    if (!path.isRelative(appFile)) {
-      if (!path.isWithin(packageDir, appFile)) {
-        printError(
-          'Application file $appFile is outside the package directory $packageDir'
-        );
-        return null;
-      }
-
-      appFile = path.relative(appFile, from: packageDir);
-    }
-
-    List<String> parts = path.split(appFile);
-
-    if (parts.length < 2) {
-      printError(
-        'Application file $appFile must reside in one of the sub-directories '
-        'of the package structure, not in the root directory.'
-      );
-      return null;
-    }
-
-    // Look for the test file inside `test_driver/` matching the sub-path, e.g.
-    // if the application is `lib/foo/bar.dart`, the test file is expected to
-    // be `test_driver/foo/bar_test.dart`.
-    String pathWithNoExtension = path.withoutExtension(path.joinAll(
-      <String>[packageDir, 'test_driver']..addAll(parts.skip(1))));
-    return '${pathWithNoExtension}_test${path.extension(appFile)}';
+  String _normalizePath(String rootPath, String relativePath) {
+    return path.normalize(path.join(rootPath, relativePath));
   }
 }
 
 /// Finds a device to test on. May launch a simulator, if necessary.
-typedef Future<Device> TargetDevicesFinder();
+typedef Future<List<Device>> TargetDevicesFinder();
 TargetDevicesFinder targetDevicesFinder = findTargetDevices;
 void restoreTargetDevicesFinder() {
   targetDevicesFinder = findTargetDevices;
 }
 
-Future<Device> findTargetDevices() async {
+Future<List<Device>> findTargetDevices() async {
+  // Should not specify a single device id
+  /*
   if (deviceManager.hasSpecifiedDeviceId) {
     return deviceManager.getDeviceById(deviceManager.specifiedDeviceId);
   }
+  */
 
   List<Device> devices = await deviceManager.getAllConnectedDevices();
 
-  if (os.isMacOS) {
-    // On Mac we look for the iOS Simulator. If available, we use that. Then
-    // we look for an Android device. If there's one, we use that. Otherwise,
-    // we launch a new iOS Simulator.
-    Device reusableDevice = devices.firstWhere(
-      (Device d) => d.isLocalEmulator,
-      orElse: () {
-        return devices.firstWhere((Device d) => d is AndroidDevice,
-            orElse: () => null);
-      }
-    );
-
-    if (reusableDevice != null) {
-      printStatus('Found connected ${reusableDevice.isLocalEmulator ? "emulator" : "device"} "${reusableDevice.name}"; will reuse it.');
-      return reusableDevice;
-    }
-
-    // No running emulator found. Attempt to start one.
-    printStatus('Starting iOS Simulator, because did not find existing connected devices.');
-    bool started = await SimControl.instance.boot();
-    if (started) {
-      return IOSSimulatorUtils.instance.getAttachedDevices().first;
-    } else {
-      printError('Failed to start iOS Simulator.');
-      return null;
-    }
-  } else if (os.isLinux) {
-    // On Linux, for now, we just grab the first connected device we can find.
+  if (os.isMacOS || os.isLinux) {
+    // On MacOS or Linux, we grab the all connected device we can find.
     if (devices.isEmpty) {
       printError('No devices found.');
       return null;
-    } else if (devices.length > 1) {
-      printStatus('Found multiple connected devices:');
-      printStatus(devices.map((Device d) => '  - ${d.name}\n').join(''));
+    } else {
+      print(
+        'Found connected device${ devices.length == 1 ? '' : 's' }:\n'
+        '<${devices.join(",")}>'
+      );
+      return devices;
     }
-    printStatus('Using device ${devices.first.name}.');
-    return devices.first;
   } else if (os.isWindows) {
     printError('Windows is not yet supported.');
     return null;
@@ -243,6 +216,7 @@ void restoreMultiDeviceAppsStarter() {
 }
 
 Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
+  // command.specs['devices']['HT4CWJT03204']['app-path']
   String mainPath = findMainDartFile(command.target);
   if (await fs.type(mainPath) != FileSystemEntityType.FILE) {
     printError('Tried to run $mainPath, but that file does not exist.');
@@ -250,10 +224,10 @@ Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
   }
 
   // TODO(devoncarew): We should remove the need to special case here.
-  if (command.device is AndroidDevice) {
+  if (command.devices is AndroidDevice) {
     printTrace('Building an APK.');
     int result = await build_apk.buildApk(
-      command.device.platform,
+      command.devices[0].platform,
       target: command.target,
       buildMode: command.getBuildMode()
     );
@@ -267,17 +241,17 @@ Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
 
   printTrace('Installing application package.');
   ApplicationPackage package = command.applicationPackages
-      .getPackageForPlatform(command.device.platform);
-  if (command.device.isAppInstalled(package))
-    command.device.uninstallApp(package);
-  command.device.installApp(package);
+      .getPackageForPlatform(command.devices[0].platform);
+  if (command.devices[0].isAppInstalled(package))
+    command.devices[0].uninstallApp(package);
+  command.devices[0].installApp(package);
 
   Map<String, dynamic> platformArgs = <String, dynamic>{};
   if (command.traceStartup)
     platformArgs['trace-startup'] = command.traceStartup;
 
   printTrace('Starting application.');
-  LaunchResult result = await command.device.startApp(
+  LaunchResult result = await command.devices[0].startApp(
     package,
     command.getBuildMode(),
     mainPath: mainPath,
@@ -285,7 +259,7 @@ Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
     debuggingOptions: new DebuggingOptions.enabled(
       command.getBuildMode(),
       startPaused: true,
-      observatoryPort: command.debugPorts[0]
+      observatoryPort: 0//command.debugPorts[0]
     ),
     platformArgs: platformArgs
   );
@@ -317,7 +291,7 @@ void restoreMultiDeviceAppsStopper() {
 
 Future<int> stopMultiDeviceApps(MultiDriveCommand command) async {
   printTrace('Stopping application.');
-  ApplicationPackage package = command.applicationPackages.getPackageForPlatform(command.device.platform);
-  bool stopped = await command.device.stopApp(package);
+  ApplicationPackage package = command.applicationPackages.getPackageForPlatform(command.devices[0].platform);
+  bool stopped = await command.devices[0].stopApp(package);
   return stopped ? 0 : 1;
 }
