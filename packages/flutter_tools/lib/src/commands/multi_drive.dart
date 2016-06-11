@@ -139,7 +139,7 @@ class MultiDriveCommand extends RunCommandBase {
       if (!argResults['keep-app-running'] && !argResults['use-existing-app']) {
         printStatus('Stopping application instance.');
         try {
-          await appsStopper(this);
+          await allAppsStopper(this);
         } catch(error, stackTrace) {
           // TODO(yjbanov): remove this guard when this bug is fixed: https://github.com/dart-lang/sdk/issues/25862
           printTrace('Could not stop application: $error\n$stackTrace');
@@ -215,56 +215,92 @@ void restoreMultiDeviceAppsStarter() {
   appsStarter = startMultiDeviceApps;
 }
 
+Device findDevice(List<Device> devices, String deviceID) {
+  for(Device device in devices) {
+    if(device.id == deviceID) return device;
+  }
+  return null;
+}
+
 Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
   // command.specs['devices']['HT4CWJT03204']['app-path']
-  String mainPath = findMainDartFile(command.target);
-  if (await fs.type(mainPath) != FileSystemEntityType.FILE) {
-    printError('Tried to run $mainPath, but that file does not exist.');
-    return 1;
+  Map<String, dynamic> devices = command.specs['devices'];
+  List<Future<LaunchResult>> installAndStartAppFunctions = <Future<LaunchResult>>[];
+
+  for(String deviceID in devices.keys) {
+    Map<String, String> config = devices[deviceID];
+
+    String mainPath = findMainDartFile(config['app-path']);
+    print('========');
+    print('Main Path: $mainPath');
+    print('========');
+    if (await fs.type(mainPath) != FileSystemEntityType.FILE) {
+      printError('Tried to run $mainPath, but that file does not exist.');
+      return 1;
+    }
+
+    Device device = findDevice(command.devices, deviceID);
+
+    // TODO(devoncarew): We should remove the need to special case here.
+    if (device is AndroidDevice) {
+      printTrace('Building an APK.');
+      int result = await build_apk.buildApk(
+        device.platform,
+        target: config['app-path'], //command.target,
+        buildMode: command.getBuildMode()
+      );
+
+      if (result != 0)
+        return result;
+    }
+
+    printTrace('Stopping previously running application, if any.');
+    await appsStopper(command.applicationPackages, device);
+
+    installAndStartAppFunctions.add(makeInstallAndStartApp(command, device, mainPath, config['debug-port']));
   }
+  // command.specs['devices'].forEach((String deviceID, Map<String, String> value) async {
+  //
+  // });
+  Future.wait(installAndStartAppFunctions)
+        .then((List<LaunchResult> results) {
+          for(LaunchResult result in results) {
+            if(!result.started) return 2;
+          }
+        });
+  return 0;
+}
 
-  // TODO(devoncarew): We should remove the need to special case here.
-  if (command.devices is AndroidDevice) {
-    printTrace('Building an APK.');
-    int result = await build_apk.buildApk(
-      command.devices[0].platform,
-      target: command.target,
-      buildMode: command.getBuildMode()
-    );
+Future<LaunchResult> makeInstallAndStartApp(
+  MultiDriveCommand command,
+  Device device,
+  String mainPath,
+  String debugPort) async {
+    printTrace('Installing application package.');
+    ApplicationPackage package = command.applicationPackages
+        .getPackageForPlatform(device.platform);
+    if (device.isAppInstalled(package))
+      device.uninstallApp(package);
+    device.installApp(package);
 
-    if (result != 0)
-      return result;
-  }
+    Map<String, dynamic> platformArgs = <String, dynamic>{};
+    if (command.traceStartup)
+      platformArgs['trace-startup'] = command.traceStartup;
 
-  printTrace('Stopping previously running application, if any.');
-  await appsStopper(command);
-
-  printTrace('Installing application package.');
-  ApplicationPackage package = command.applicationPackages
-      .getPackageForPlatform(command.devices[0].platform);
-  if (command.devices[0].isAppInstalled(package))
-    command.devices[0].uninstallApp(package);
-  command.devices[0].installApp(package);
-
-  Map<String, dynamic> platformArgs = <String, dynamic>{};
-  if (command.traceStartup)
-    platformArgs['trace-startup'] = command.traceStartup;
-
-  printTrace('Starting application.');
-  LaunchResult result = await command.devices[0].startApp(
-    package,
-    command.getBuildMode(),
-    mainPath: mainPath,
-    route: command.route,
-    debuggingOptions: new DebuggingOptions.enabled(
+    printTrace('Starting application.');
+    LaunchResult result = await device.startApp(
+      package,
       command.getBuildMode(),
-      startPaused: true,
-      observatoryPort: 0//command.debugPorts[0]
-    ),
-    platformArgs: platformArgs
-  );
-
-  return result.started ? 0 : 2;
+      mainPath: mainPath,
+      route: command.route,
+      debuggingOptions: new DebuggingOptions.enabled(
+        command.getBuildMode(),
+        startPaused: true,
+        observatoryPort: int.parse(debugPort)
+      ),
+      platformArgs: platformArgs
+    );
+    return result;
 }
 
 /// Runs driver tests.
@@ -283,15 +319,32 @@ Future<int> runMultiDeviceTests(List<String> testArgs) async {
 
 
 /// Stops the application.
-typedef Future<int> MultiDeviceAppsStopper(MultiDriveCommand command);
+typedef Future<int> MultiDeviceAppsStopper(ApplicationPackageStore packageStore, Device device);
 MultiDeviceAppsStopper appsStopper = stopMultiDeviceApps;
 void restoreMultiDeviceAppsStopper() {
   appsStopper = stopMultiDeviceApps;
 }
 
-Future<int> stopMultiDeviceApps(MultiDriveCommand command) async {
+Future<int> stopMultiDeviceApps(ApplicationPackageStore packageStore, Device device) async {
   printTrace('Stopping application.');
-  ApplicationPackage package = command.applicationPackages.getPackageForPlatform(command.devices[0].platform);
-  bool stopped = await command.devices[0].stopApp(package);
+  ApplicationPackage package = packageStore.getPackageForPlatform(device.platform);
+  bool stopped = await device.stopApp(package);
   return stopped ? 0 : 1;
+}
+
+typedef Future<int> AllAppsStopper(MultiDriveCommand command);
+AllAppsStopper allAppsStopper = stopAllApps;
+void restoreAllAppsStopper() {
+  allAppsStopper = stopAllApps;
+}
+
+Future<int> stopAllApps(MultiDriveCommand command) async {
+  printTrace('Stopping all applications');
+  int result = 0;
+  for(Device device in command.devices) {
+    ApplicationPackage package = command.applicationPackages.getPackageForPlatform(device.platform);
+    bool stopped = await device.stopApp(package);
+    result += stopped ? 0 : 1;
+  }
+  return result == 0 ? 0 : 1;
 }
