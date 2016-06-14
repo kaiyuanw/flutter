@@ -18,11 +18,24 @@ import '../device.dart';
 import '../globals.dart';
 import '../ios/simulators.dart' show SimControl, IOSSimulatorUtils;
 import '../run.dart';
+import '../runner/flutter_command.dart';
 import 'build_apk.dart' as build_apk;
 import 'run.dart';
 
-class MultiDriveCommand extends RunCommandBase {
+class MultiDriveCommand extends FlutterCommand {
   MultiDriveCommand() {
+    addBuildModeFlags(defaultToRelease: false);
+
+    argParser.addFlag('trace-startup',
+        negatable: true,
+        defaultsTo: false,
+        help: 'Start tracing during startup.');
+
+    /*
+    argParser.addOption('route',
+        help: 'Which route to load when running the app.');
+    */
+
     argParser.addFlag(
       'keep-app-running',
       negatable: true,
@@ -58,6 +71,10 @@ class MultiDriveCommand extends RunCommandBase {
     //   help: 'Listen to a list of ports for a debug connection.'
     // );
   }
+
+  bool get traceStartup => argResults['trace-startup'];
+
+  String get route => null;//argResults['route'];
 
   @override
   final String name = 'multi-drive';
@@ -97,7 +114,7 @@ class MultiDriveCommand extends RunCommandBase {
     }
 
     if (!argResults['use-existing-app']) {
-      printStatus('Starting application: ${argResults["target"]}');
+      // printStatus('Starting application: ${argResults["target"]}');
 
       if (getBuildMode() == BuildMode.release) {
         // This is because we need VM service to be able to drive the app.
