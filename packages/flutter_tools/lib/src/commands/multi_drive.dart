@@ -55,6 +55,8 @@ class MultiDriveCommand extends FlutterCommand {
         'the application running after tests are done.'
     );
 
+    // Add --specs option to load the specs file that specifies test path,
+    // device ids, application paths and debug ports
     argParser.addOption(
       'specs',
       defaultsTo: null,
@@ -86,14 +88,10 @@ class MultiDriveCommand extends FlutterCommand {
   final List<String> aliases = <String>['multi-driver'];
 
   List<Device> _devices;
+
   List<Device> get devices => _devices;
 
   dynamic specs;
-
-  // List<int> get debugPorts =>
-  //   argResults['debug-ports']
-  //   .split(',')
-  //   .foreach((String port) => int.parse(port));
 
   @override
   Future<int> runInProject() async {
@@ -119,7 +117,7 @@ class MultiDriveCommand extends FlutterCommand {
       if (getBuildMode() == BuildMode.release) {
         // This is because we need VM service to be able to drive the app.
         printError(
-          'Flutter Driver does not support running in release mode.\n'
+          'Flutter Multi-Device Driver does not support running in release mode.\n'
           '\n'
           'Use --profile mode for testing application performance.\n'
           'Use --debug (default) mode for testing correctness (with assertions).'
@@ -240,17 +238,16 @@ Device findDevice(List<Device> devices, String deviceID) {
 }
 
 Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
-  // command.specs['devices']['HT4CWJT03204']['app-path']
+  // Load all device ids
   Map<String, dynamic> devices = command.specs['devices'];
+  // Try to install and start apps in parallel
   List<Future<LaunchResult>> installAndStartAppFunctions = <Future<LaunchResult>>[];
-
+  // Iterate through device ids to get devices
   for(String deviceID in devices.keys) {
     Map<String, String> config = devices[deviceID];
 
     String mainPath = findMainDartFile(config['app-path']);
-    print('========');
-    print('Main Path: $mainPath');
-    print('========');
+
     if (await fs.type(mainPath) != FileSystemEntityType.FILE) {
       printError('Tried to run $mainPath, but that file does not exist.');
       return 1;
@@ -279,6 +276,8 @@ Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
   // command.specs['devices'].forEach((String deviceID, Map<String, String> value) async {
   //
   // });
+  // Install and start apps in parallel
+  // TODO: modify internal synchronous calls to asynchronous calls
   Future.wait(installAndStartAppFunctions)
         .then((List<LaunchResult> results) {
           for(LaunchResult result in results) {
@@ -336,13 +335,17 @@ Future<int> runMultiDeviceTests(List<String> testArgs) async {
 
 
 /// Stops the application.
-typedef Future<int> MultiDeviceAppsStopper(ApplicationPackageStore packageStore, Device device);
+typedef Future<int> MultiDeviceAppsStopper(
+  ApplicationPackageStore packageStore,
+  Device device);
 MultiDeviceAppsStopper appsStopper = stopMultiDeviceApps;
 void restoreMultiDeviceAppsStopper() {
   appsStopper = stopMultiDeviceApps;
 }
 
-Future<int> stopMultiDeviceApps(ApplicationPackageStore packageStore, Device device) async {
+Future<int> stopMultiDeviceApps(
+  ApplicationPackageStore packageStore,
+  Device device) async {
   printTrace('Stopping application.');
   ApplicationPackage package = packageStore.getPackageForPlatform(device.platform);
   bool stopped = await device.stopApp(package);
@@ -359,7 +362,8 @@ Future<int> stopAllApps(MultiDriveCommand command) async {
   printTrace('Stopping all applications');
   int result = 0;
   for(Device device in command.devices) {
-    ApplicationPackage package = command.applicationPackages.getPackageForPlatform(device.platform);
+    ApplicationPackage package = command.applicationPackages
+                                        .getPackageForPlatform(device.platform);
     bool stopped = await device.stopApp(package);
     result += stopped ? 0 : 1;
   }
