@@ -96,6 +96,10 @@ class MultiDriveCommand extends FlutterCommand {
   @override
   Future<int> runInProject() async {
     String specsPath = argResults['specs'];
+    if(specsPath == null) {
+      print('--specs=$specsPath, you must pass a non-null path to the specs argument.');
+      return 1;
+    }
     this.specs = await _loadSpecs(specsPath);
     print(specs);
 
