@@ -41,8 +41,6 @@ if [ ! -f "$SNAPSHOT_PATH" ] || [ ! -f "$STAMP_PATH" ] || [ `cat "$STAMP_PATH"` 
   echo $REVISION > "$STAMP_PATH"
 fi
 
-FLUTTER_DEV=1
-
 if [ $FLUTTER_DEV ]; then
   "$DART" --packages="$FLUTTER_TOOLS_DIR/.packages" -c "$SCRIPT_PATH" "$@"
 else
