@@ -1,0 +1,60 @@
+#!/bin/bash
+# Copyright 2015 The Chromium Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+set -e
+
+function follow_links() {
+  cd -P "${1%/*}"
+  file="$PWD/${1##*/}"
+  while [ -h "$file" ]; do
+    # On Mac OS, readlink -f doesn't work.
+    cd -P "${file%/*}"
+    file="$(readlink "$file")"
+    cd -P "${file%/*}"
+    file="$PWD/${file##*/}"
+  done
+  echo "$PWD/${file##*/}"
+}
+
+PROG_NAME="$(follow_links "$BASH_SOURCE")"
+BIN_DIR="$(cd "${PROG_NAME%/*}" ; pwd -P)"
+export FLUTTER_ROOT="$(cd "${BIN_DIR}/.." ; pwd -P)"
+
+FLUTTER_TOOLS_DIR="$FLUTTER_ROOT/packages/flutter_tools"
+SNAPSHOT_PATH="$FLUTTER_ROOT/bin/cache/flutter_tools.snapshot"
+STAMP_PATH="$FLUTTER_ROOT/bin/cache/flutter_tools.stamp"
+SCRIPT_PATH="$FLUTTER_TOOLS_DIR/bin/flutter_tools.dart"
+DART_SDK_PATH="$FLUTTER_ROOT/bin/cache/dart-sdk"
+
+DART="$DART_SDK_PATH/bin/dart"
+
+REVISION=`(cd "$FLUTTER_ROOT"; git rev-parse HEAD)`
+if [ ! -f "$SNAPSHOT_PATH" ] || [ ! -f "$STAMP_PATH" ] || [ `cat "$STAMP_PATH"` != "$REVISION" ] || [ "$FLUTTER_TOOLS_DIR/pubspec.yaml" -nt "$FLUTTER_TOOLS_DIR/pubspec.lock" ]; then
+  "$FLUTTER_ROOT/bin/cache/update_dart_sdk.sh"
+
+  echo Building flutter tool...
+  FLUTTER_DIR="$FLUTTER_ROOT/packages/flutter"
+  (cd "$FLUTTER_TOOLS_DIR"; "../../bin/cache/dart-sdk/bin/pub" get --verbosity=warning)
+  "$DART" --snapshot="$SNAPSHOT_PATH" --packages="$FLUTTER_TOOLS_DIR/.packages" "$SCRIPT_PATH"
+  echo $REVISION > "$STAMP_PATH"
+fi
+
+if [ $FLUTTER_DEV ]; then
+  "$DART" --packages="$FLUTTER_TOOLS_DIR/.packages" -c "$SCRIPT_PATH" "$@"
+else
+  set +e
+  "$DART" "$SNAPSHOT_PATH" "$@"
+
+  # The VM exits with code 253 if the snapshot version is out-of-date.
+  # If it is, we need to snapshot it again.
+  EXIT_CODE=$?
+  if [ $EXIT_CODE != 253 ]; then
+    exit $EXIT_CODE
+  fi
+
+  set -e
+  "$DART" --snapshot="$SNAPSHOT_PATH" --package="$FLUTTER_TOOLS_DIR/.packages" "$SCRIPT_PATH"
+  "$DART" "$SNAPSHOT_PATH" "$@"
+fi
