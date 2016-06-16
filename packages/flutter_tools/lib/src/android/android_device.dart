@@ -54,15 +54,7 @@ class AndroidDevice extends Device {
 
   @override
   String toString() => name;
-  /*
-    "\n"
-    "name: $name,\n"
-    "id: $id,\n"
-    "productID: $productID,\n"
-    "modelID: $modelID,\n"
-    "deviceCodeName: $deviceCodeName\n";
-  */
-
+  
   Map<String, String> _properties;
   bool _isLocalEmulator;
   TargetPlatform _platform;

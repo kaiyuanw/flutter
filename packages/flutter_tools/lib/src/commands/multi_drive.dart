@@ -22,6 +22,7 @@ import '../runner/flutter_command.dart';
 import 'build_apk.dart' as build_apk;
 import 'run.dart';
 
+// TODO(kaiyuanw): Add tests for this file
 class MultiDriveCommand extends FlutterCommand {
   MultiDriveCommand() {
     addBuildModeFlags(defaultToRelease: false);
@@ -30,11 +31,6 @@ class MultiDriveCommand extends FlutterCommand {
         negatable: true,
         defaultsTo: false,
         help: 'Start tracing during startup.');
-
-    /*
-    argParser.addOption('route',
-        help: 'Which route to load when running the app.');
-    */
 
     argParser.addFlag(
       'keep-app-running',
@@ -62,16 +58,9 @@ class MultiDriveCommand extends FlutterCommand {
       defaultsTo: null,
       allowMultiple: false,
       help:
-        'Config file that specifies the devices, apps and debug-ports for testing.'
+        'Path to the config file that specifies the devices, '
+        'apps and debug-ports for testing.'
     );
-
-    // argParser.addOption(
-    //   'debug-ports',
-    //   defaultsTo: kDefaultMultiDrivePort,
-    //   allowMultiple: true,
-    //   splitCommas: true,
-    //   help: 'Listen to a list of ports for a debug connection.'
-    // );
   }
 
   bool get traceStartup => argResults['trace-startup'];
@@ -82,7 +71,7 @@ class MultiDriveCommand extends FlutterCommand {
   final String name = 'multi-drive';
 
   @override
-  final String description = 'Runs Flutter Multi-Device Driver tests for the current project.';
+  final String description = 'Run Flutter Multi-Device Driver tests for the current project.';
 
   @override
   final List<String> aliases = <String>['multi-driver'];
@@ -170,17 +159,26 @@ class MultiDriveCommand extends FlutterCommand {
   }
 
   Future<dynamic> _loadSpecs(String specsPath) async {
-    // Read specs file into json format
-    dynamic spec = JSON.decode(await new io.File(specsPath).readAsString());
-    // Get the parent directory of the specs file
-    String rootPath = new io.File(specsPath).parent.absolute.path;
-    // Normalize the 'test-path' in the specs file
-    spec['test-path'] = _normalizePath(rootPath, spec['test-path']);
-    // Normalize the 'app-path' in the specs file
-    spec['devices'].forEach((String deviceID, Map<String, String> value) {
-      value['app-path'] = _normalizePath(rootPath, value['app-path']);
-    });
-    return spec;
+    try {
+      // Read specs file into json format
+      dynamic newSpecs = JSON.decode(await new io.File(specsPath).readAsString());
+      // Get the parent directory of the specs file
+      String rootPath = new io.File(specsPath).parent.absolute.path;
+      // Normalize the 'test-path' in the specs file
+      newSpecs['test-path'] = _normalizePath(rootPath, newSpecs['test-path']);
+      // Normalize the 'app-path' in the specs file
+      newSpecs['devices'].forEach((String deviceID, Map<String, String> value) {
+        value['app-path'] = _normalizePath(rootPath, value['app-path']);
+      });
+      return newSpecs;
+    } on io.FileSystemException catch(e) {
+      print(e);
+      io.exit(2);
+    } catch (e, s) {
+      print('Exception details:\n $e');
+      print('Stack trace:\n $s');
+      io.exit(1);
+    }
   }
 
   String _normalizePath(String rootPath, String relativePath) {
@@ -196,13 +194,6 @@ void restoreTargetDevicesFinder() {
 }
 
 Future<List<Device>> findTargetDevices() async {
-  // Should not specify a single device id
-  /*
-  if (deviceManager.hasSpecifiedDeviceId) {
-    return deviceManager.getDeviceById(deviceManager.specifiedDeviceId);
-  }
-  */
-
   List<Device> devices = await deviceManager.getAllConnectedDevices();
 
   if (os.isMacOS || os.isLinux) {
@@ -234,9 +225,9 @@ void restoreMultiDeviceAppsStarter() {
   appsStarter = startMultiDeviceApps;
 }
 
-Device findDevice(List<Device> devices, String deviceID) {
-  for(Device device in devices) {
-    if(device.id == deviceID) return device;
+Device findDevice(List<Device> specifiedDevices, String deviceID) {
+  for(Device specifiedDevice in specifiedDevices) {
+    if(specifiedDevice.id == deviceID) return specifiedDevice;
   }
   return null;
 }
@@ -273,15 +264,15 @@ Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
     }
 
     printTrace('Stopping previously running application, if any.');
-    await appsStopper(command.applicationPackages, device);
+    // TODO(kaiyuanw): Need to support totally separate applications
+    await appStopper(command.applicationPackages, device);
 
-    installAndStartAppFunctions.add(makeInstallAndStartApp(command, device, mainPath, config['debug-port']));
+    installAndStartAppFunctions.add(
+      makeInstallAndStartApp(command, device, mainPath, config['debug-port'])
+    );
   }
-  // command.specs['devices'].forEach((String deviceID, Map<String, String> value) async {
-  //
-  // });
   // Install and start apps in parallel
-  // TODO: modify internal synchronous calls to asynchronous calls
+  // TODO(kaiyuanw): Modify internal synchronous calls to asynchronous calls
   Future.wait(installAndStartAppFunctions)
         .then((List<LaunchResult> results) {
           for(LaunchResult result in results) {
@@ -324,13 +315,13 @@ Future<LaunchResult> makeInstallAndStartApp(
 }
 
 /// Runs driver tests.
-typedef Future<int> MultiDeviceTestRunner(List<String> testArgs);
-MultiDeviceTestRunner testRunner = runMultiDeviceTests;
+typedef Future<int> TestRunner(List<String> testArgs);
+TestRunner testRunner = runTests;
 void restoreMultiDeviceTestRunner() {
-  testRunner = runMultiDeviceTests;
+  testRunner = runTests;
 }
 
-Future<int> runMultiDeviceTests(List<String> testArgs) async {
+Future<int> runTests(List<String> testArgs) async {
   printTrace('Running driver tests.');
   List<String> args = testArgs.toList()..add('-rexpanded');
   await executable.main(args);
@@ -339,15 +330,15 @@ Future<int> runMultiDeviceTests(List<String> testArgs) async {
 
 
 /// Stops the application.
-typedef Future<int> MultiDeviceAppsStopper(
+typedef Future<int> AppStopper(
   ApplicationPackageStore packageStore,
   Device device);
-MultiDeviceAppsStopper appsStopper = stopMultiDeviceApps;
-void restoreMultiDeviceAppsStopper() {
-  appsStopper = stopMultiDeviceApps;
+AppStopper appStopper = stopApp;
+void restoreAppStopper() {
+  appStopper = stopApp;
 }
 
-Future<int> stopMultiDeviceApps(
+Future<int> stopApp(
   ApplicationPackageStore packageStore,
   Device device) async {
   printTrace('Stopping application.');
