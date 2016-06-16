@@ -65,6 +65,7 @@ class MultiDriveCommand extends FlutterCommand {
 
   bool get traceStartup => argResults['trace-startup'];
 
+  // TODO(kaiyuanw): Need to read 'route' from the specs file
   String get route => null;//argResults['route'];
 
   @override
@@ -171,12 +172,14 @@ class MultiDriveCommand extends FlutterCommand {
         value['app-path'] = _normalizePath(rootPath, value['app-path']);
       });
       return newSpecs;
-    } on io.FileSystemException catch(e) {
-      print(e);
-      io.exit(2);
-    } catch (e, s) {
-      print('Exception details:\n $e');
-      print('Stack trace:\n $s');
+    } on io.FileSystemException {
+      printError('File $specsPath does not exist.');
+      io.exit(1);
+    } on FormatException {
+      printError('File $specsPath is not in JSON format.');
+      io.exit(1);
+    } catch (e) {
+      print('Unknown Exception details:\n $e');
       io.exit(1);
     }
   }
@@ -225,21 +228,21 @@ void restoreMultiDeviceAppsStarter() {
   appsStarter = startMultiDeviceApps;
 }
 
-Device findDevice(List<Device> specifiedDevices, String deviceID) {
-  for(Device specifiedDevice in specifiedDevices) {
-    if(specifiedDevice.id == deviceID) return specifiedDevice;
+Device findDevice(List<Device> devices, String deviceID) {
+  for(Device device in devices) {
+    if(device.id == deviceID) return device;
   }
   return null;
 }
 
 Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
   // Load all device ids
-  Map<String, dynamic> devices = command.specs['devices'];
+  Map<String, dynamic> specifiedDevices = command.specs['devices'];
   // Try to install and start apps in parallel
   List<Future<LaunchResult>> installAndStartAppFunctions = <Future<LaunchResult>>[];
   // Iterate through device ids to get devices
-  for(String deviceID in devices.keys) {
-    Map<String, String> config = devices[deviceID];
+  for(String deviceID in specifiedDevices.keys) {
+    Map<String, String> config = specifiedDevices[deviceID];
 
     String mainPath = findMainDartFile(config['app-path']);
 
