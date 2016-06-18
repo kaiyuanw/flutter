@@ -4,9 +4,11 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert' show JSON;
 import 'package:json_rpc_2/json_rpc_2.dart' as rpc;
 import 'package:vm_service_client/vm_service_client.dart';
 import 'package:web_socket_channel/io.dart';
+import 'package:flutter_tools/src/base/common.dart';
 
 import 'error.dart';
 import 'find.dart';
@@ -66,6 +68,24 @@ class FlutterDriver {
   static const String _kSetVMTimelineFlagsMethod = '_setVMTimelineFlags';
   static const String _kGetVMTimelineMethod = '_getVMTimeline';
   static const Duration _kDefaultTimeout = const Duration(seconds: 5);
+
+  static Future<FlutterDriver> connectByDeviceNickname({String deviceNickname}) async {
+    Directory systemTempDir = Directory.systemTemp;
+    File tempFile = new File('${systemTempDir.path}/$kMultiDriveSpecsName');
+    if(!await tempFile.exists()) {
+      _log.error('Multi-Drive temporary specs file not found.');
+      exit(1);
+    }
+    dynamic configs = JSON.decode(await tempFile.readAsString());
+    if(!configs.containsKey(deviceNickname)) {
+      _log.error('Device nickname $deviceNickname not found.');
+      exit(1);
+    }
+    String deviceID = configs[deviceNickname]['device-id'];
+    String debugPort = configs[deviceNickname]['debug-port'];
+    _log.info('$deviceNickname refers to device $deviceID running on port $debugPort');
+    return await connect(dartVmServiceUrl: 'http://localhost:$debugPort');
+  }
 
   /// Connects to a Flutter application.
   ///

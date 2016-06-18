@@ -18,6 +18,8 @@ dependencies:
     path: '../flutter'
   flutter_test:
     path: '../flutter_test'
+  flutter_tools:
+    path: '../flutter_tools'
 
 dev_dependencies:
   test: 0.12.13+4
