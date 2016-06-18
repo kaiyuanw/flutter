@@ -90,7 +90,7 @@ class MultiDriveCommand extends FlutterCommand {
       print('--specs=$specsPath, you must pass a non-null path to the specs argument.');
       return 1;
     }
-    this.specs = await _loadSpecs(specsPath);
+    this.specs = await loadSpecs(specsPath);
     print(specs);
 
     this._devices = await targetDevicesFinder();
@@ -158,35 +158,35 @@ class MultiDriveCommand extends FlutterCommand {
       }
     }
   }
+}
 
-  Future<dynamic> _loadSpecs(String specsPath) async {
-    try {
-      // Read specs file into json format
-      dynamic newSpecs = JSON.decode(await new io.File(specsPath).readAsString());
-      // Get the parent directory of the specs file
-      String rootPath = new io.File(specsPath).parent.absolute.path;
-      // Normalize the 'test-path' in the specs file
-      newSpecs['test-path'] = _normalizePath(rootPath, newSpecs['test-path']);
-      // Normalize the 'app-path' in the specs file
-      newSpecs['devices'].forEach((String deviceID, Map<String, String> value) {
-        value['app-path'] = _normalizePath(rootPath, value['app-path']);
-      });
-      return newSpecs;
-    } on io.FileSystemException {
-      printError('File $specsPath does not exist.');
-      io.exit(1);
-    } on FormatException {
-      printError('File $specsPath is not in JSON format.');
-      io.exit(1);
-    } catch (e) {
-      print('Unknown Exception details:\n $e');
-      io.exit(1);
-    }
+Future<dynamic> loadSpecs(String specsPath) async {
+  try {
+    // Read specs file into json format
+    dynamic newSpecs = JSON.decode(await new io.File(specsPath).readAsString());
+    // Get the parent directory of the specs file
+    String rootPath = new io.File(specsPath).parent.absolute.path;
+    // Normalize the 'test-path' in the specs file
+    newSpecs['test-path'] = normalizePath(rootPath, newSpecs['test-path']);
+    // Normalize the 'app-path' in the specs file
+    newSpecs['devices'].forEach((String name, Map<String, String> map) {
+      map['app-path'] = normalizePath(rootPath, map['app-path']);
+    });
+    return newSpecs;
+  } on io.FileSystemException {
+    printError('File $specsPath does not exist.');
+    io.exit(1);
+  } on FormatException {
+    printError('File $specsPath is not in JSON format.');
+    io.exit(1);
+  } catch (e) {
+    print('Unknown Exception details:\n $e');
+    io.exit(1);
   }
+}
 
-  String _normalizePath(String rootPath, String relativePath) {
-    return path.normalize(path.join(rootPath, relativePath));
-  }
+String normalizePath(String rootPath, String relativePath) {
+  return path.normalize(path.join(rootPath, relativePath));
 }
 
 /// Finds a device to test on. May launch a simulator, if necessary.
@@ -228,37 +228,185 @@ void restoreMultiDeviceAppsStarter() {
   appsStarter = startMultiDeviceApps;
 }
 
-Device findDevice(List<Device> devices, String deviceID) {
-  for(Device device in devices) {
-    if(device.id == deviceID) return device;
+// Device findDevice(List<Device> devices, String deviceID) {
+//   for(Device device in devices) {
+//     if(device.id == deviceID) return device;
+//   }
+//   return null;
+// }
+
+/// Check if the given port is available.  If the port can be connected to,
+/// then it is in use, otherwise it is available.
+Future<bool> isAvailable(int port) async {
+  Uri uri = Uri.parse('http://localhost:$port');
+  if (uri.scheme == 'http') uri = uri.replace(scheme: 'ws', path: '/ws');
+  bool isAvailable = false;
+  io.WebSocket ws;
+  try {
+    ws = await io.WebSocket.connect(uri.toString());
+  } catch(e) {
+    isAvailable = true;
+  } finally {
+    if(ws != null) {
+      ws.close();
+    }
   }
-  return null;
+  return isAvailable;
+}
+
+// Record ports that have already been assigned
+Set<int> portsAssigned = new Set<int>();
+// Keep a counter that refer to the first potential available port
+// after kDefaultDebugPortBase
+int potentialAvailablePort = kDefaultDebugPortBase;
+// The biggest port that we try
+int portUpperBound = kDefaultDebugPortBase + kDefaultPortRange;
+
+Future<String> findNextAvailablePort() async {
+  while(!await isAvailable(potentialAvailablePort)
+        ||
+        portsAssigned.contains(potentialAvailablePort)) {
+    potentialAvailablePort++;
+  }
+  int resultPort = potentialAvailablePort++;
+  if(resultPort > portUpperBound) {
+    printError('No available port found in range '
+               '$kDefaultDebugPortBase to $portUpperBound');
+    io.exit(1);
+  }
+  portsAssigned.add(resultPort);
+  return '$resultPort';
+}
+
+// Future<String> findAvailablePort(int port) async {
+//   if(await isAvailable(port) && !portsAssigned.contains(port)) {
+//     portsAssigned.add(port);
+//     return '$port';
+//   } else {
+//     return await findNextAvailablePort();
+//   }
+// }
+
+Future<List<DeviceSpecs>> constructAllDeviceSpecs(dynamic allSpecs) async {
+  List<DeviceSpecs> devicesSpecs = <DeviceSpecs>[];
+  for(String name in allSpecs.keys) {
+    Map<String, String> specs = allSpecs[name];
+    // if(specs.containsKey('debug-port')) {
+    //   int debugPort = int.parse(specs['debug-port']);
+    //   specs['debug-port'] = await findAvailablePort(debugPort);
+    // } else {
+    //   specs['debug-port'] = await findNextAvailablePort();
+    // }
+    // print(specs['debug-port']);
+    specs['debug-port'] = await findNextAvailablePort();
+    devicesSpecs.add(
+      new DeviceSpecs(
+        nickName: name,
+        deviceID: specs['device-id'],
+        deviceModelName: specs['model-name'],
+        appPath: specs['app-path'],
+        debugPort: specs['debug-port']
+      )
+    );
+  }
+  return devicesSpecs;
+}
+
+Map<DeviceSpecs, Set<Device>> findIndividualMatches(
+  List<DeviceSpecs> devicesSpecs,
+  List<Device> devices) {
+  Map<DeviceSpecs, Set<Device>> individualMatches
+    = new Map<DeviceSpecs, Set<Device>>();
+  for(DeviceSpecs deviceSpecs in devicesSpecs) {
+    Set<Device> matchedDevices = new Set<Device>();
+    for(Device device in devices) {
+      if(deviceSpecs.matches(device))
+        matchedDevices.add(device);
+    }
+    individualMatches[deviceSpecs] = matchedDevices;
+  }
+  return individualMatches;
+}
+
+bool findAllMatches(
+  int order,
+  List<DeviceSpecs> devicesSpecs,
+  Map<DeviceSpecs, Set<Device>> individualMatches,
+  Set<Device> visited,
+  Map<DeviceSpecs, Device> anyMatch
+) {
+  if(order == devicesSpecs.length) return true;
+  DeviceSpecs deviceSpecs = devicesSpecs[order];
+  Set<Device> matchedDevices = individualMatches[deviceSpecs];
+  for(Device candidate in matchedDevices) {
+    if(visited.add(candidate)) {
+      anyMatch[deviceSpecs] = candidate;
+      if(findAllMatches(order + 1, devicesSpecs, individualMatches,
+                        visited, anyMatch))
+        return true;
+      else {
+        visited.remove(candidate);
+        anyMatch.remove(deviceSpecs);
+      }
+    }
+  }
+  return false;
+}
+
+Future<Null> storeMatches(Map<DeviceSpecs, Device> anyMatch) async {
+  Map<String, dynamic> matchesData = new Map<String, dynamic>();
+  anyMatch.forEach((DeviceSpecs specs, Device device) {
+    Map<String, String> idAndPort = new Map<String, String>();
+    idAndPort['device-id'] = device.id;
+    idAndPort['debug-port'] = specs.debugPort;
+    matchesData[specs.nickName] = idAndPort;
+  });
+  io.Directory systemTempDir = io.Directory.systemTemp;
+  io.File tempFile = new io.File('${systemTempDir.path}/$kMultiDriveSpecsName');
+  if(await tempFile.exists())
+    await tempFile.delete();
+  io.File file = await tempFile.create();
+  await file.writeAsString(JSON.encode(matchesData));
 }
 
 Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
   // Load all device ids
-  Map<String, dynamic> specifiedDevices = command.specs['devices'];
+  dynamic allSpecs = command.specs['devices'];
   // Try to install and start apps in parallel
-  List<Future<LaunchResult>> installAndStartAppFunctions = <Future<LaunchResult>>[];
+  List<Future<LaunchResult>> installAndStartAppFunctions
+    = <Future<LaunchResult>>[];
+  // Build all device specs from JSON specs map
+  List<DeviceSpecs> allDeviceSpecs = await constructAllDeviceSpecs(allSpecs);
+  // Find all devices that matches each device specs
+  Map<DeviceSpecs, Set<Device>> individualMatches
+    = findIndividualMatches(allDeviceSpecs, command.devices);
+  // Given a device specs, find a single device that satisfies the specs.
+  // Make sure each specs maps to a device if possible, otherwise complain
+  Map<DeviceSpecs, Device> anyMatch = new Map<DeviceSpecs, Device>();
+  if(!findAllMatches(0, allDeviceSpecs, individualMatches,
+                     new Set<Device>(), anyMatch)) {
+    printError('No combination of devices meets the specs file.');
+    io.exit(0);
+  }
+  // Store such specs to device mapping to a temporary file for testing
+  await storeMatches(anyMatch);
   // Iterate through device ids to get devices
-  for(String deviceID in specifiedDevices.keys) {
-    Map<String, String> config = specifiedDevices[deviceID];
-
-    String mainPath = findMainDartFile(config['app-path']);
-
+  for(DeviceSpecs deviceSpecs in allDeviceSpecs) {
+    // Find the application path that contains a main function
+    String mainPath = findMainDartFile(deviceSpecs.appPath);
+    // Complain if the application path does not exist
     if (await fs.type(mainPath) != FileSystemEntityType.FILE) {
       printError('Tried to run $mainPath, but that file does not exist.');
       return 1;
     }
-
-    Device device = findDevice(command.devices, deviceID);
-
+    // Device device = findDevice(command.devices, deviceID);
+    Device device = anyMatch[deviceSpecs];
     // TODO(devoncarew): We should remove the need to special case here.
     if (device is AndroidDevice) {
       printTrace('Building an APK.');
       int result = await build_apk.buildApk(
         device.platform,
-        target: config['app-path'], //command.target,
+        target: deviceSpecs.appPath, //command.target,
         buildMode: command.getBuildMode()
       );
 
@@ -271,7 +419,7 @@ Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
     await appStopper(command.applicationPackages, device);
 
     installAndStartAppFunctions.add(
-      makeInstallAndStartApp(command, device, mainPath, config['debug-port'])
+      makeInstallAndStartApp(command, device, mainPath, deviceSpecs.debugPort)
     );
   }
   // Install and start apps in parallel
@@ -283,6 +431,38 @@ Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
           }
         });
   return 0;
+}
+
+class DeviceSpecs {
+  DeviceSpecs(
+    {
+      this.nickName,
+      this.deviceID,
+      this.deviceModelName,
+      this.appPath,
+      this.debugPort
+    }
+  );
+
+  final String nickName;
+  final String deviceID;
+  final String deviceModelName;
+  final String appPath;
+  final String debugPort;
+
+  bool matches(Device device) {
+    if(deviceID == device.id) {
+      return deviceModelName == null ? true : deviceModelName == device.name;
+    } else {
+      return deviceID == null ?
+              (deviceModelName == null ? true : deviceModelName == device.name)
+              : false;
+    }
+  }
+
+  @override
+  String toString() => 'Nickname: $nickName, Target ID: $deviceID, '
+                       'Target Model Name: $deviceModelName';
 }
 
 Future<LaunchResult> makeInstallAndStartApp(
