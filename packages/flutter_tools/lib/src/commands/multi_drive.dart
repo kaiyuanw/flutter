@@ -228,16 +228,9 @@ void restoreMultiDeviceAppsStarter() {
   appsStarter = startMultiDeviceApps;
 }
 
-// Device findDevice(List<Device> devices, String deviceID) {
-//   for(Device device in devices) {
-//     if(device.id == deviceID) return device;
-//   }
-//   return null;
-// }
-
-/// Check if the given port is available.  If the port can be connected to,
-/// then it is in use, otherwise it is available.
-Future<bool> isAvailable(int port) async {
+/// Check if the given port is used.  If the port can be connected to,
+/// then it is in use, otherwise it is not in use.
+Future<bool> isNotUsed(int port) async {
   Uri uri = Uri.parse('http://localhost:$port');
   if (uri.scheme == 'http') uri = uri.replace(scheme: 'ws', path: '/ws');
   bool isAvailable = false;
@@ -262,8 +255,12 @@ int potentialAvailablePort = kDefaultDebugPortBase;
 // The biggest port that we try
 int portUpperBound = kDefaultDebugPortBase + kDefaultPortRange;
 
+/// Detect the next availble port and return the port number.
+/// A port is considered available if the port is not used
+/// as well as not be assigned.  Only try a limited number of times,
+/// if no availble port is found then exit
 Future<String> findNextAvailablePort() async {
-  while(!await isAvailable(potentialAvailablePort)
+  while(!await isNotUsed(potentialAvailablePort)
         ||
         portsAssigned.contains(potentialAvailablePort)) {
     potentialAvailablePort++;
@@ -278,27 +275,33 @@ Future<String> findNextAvailablePort() async {
   return '$resultPort';
 }
 
-// Future<String> findAvailablePort(int port) async {
-//   if(await isAvailable(port) && !portsAssigned.contains(port)) {
-//     portsAssigned.add(port);
-//     return '$port';
-//   } else {
-//     return await findNextAvailablePort();
-//   }
-// }
+/// If the given port is not used and has not been previously assigned,
+/// then return the port.  Otherwise, find the next available port according
+/// to [findNextAvailablePort]
+Future<String> findAvailablePort(int port) async {
+  if(await isNotUsed(port) && !portsAssigned.contains(port)) {
+    portsAssigned.add(port);
+    return '$port';
+  } else {
+    return await findNextAvailablePort();
+  }
+}
 
+/// Build a list of device specs from mappings loaded from JSON .spec file
 Future<List<DeviceSpecs>> constructAllDeviceSpecs(dynamic allSpecs) async {
+  for(String name in allSpecs.keys) {
+    Map<String, String> specs = allSpecs[name];
+    if(specs.containsKey('debug-port')) {
+      int debugPort = int.parse(specs['debug-port']);
+      specs['debug-port'] = await findAvailablePort(debugPort);
+    }
+  }
   List<DeviceSpecs> devicesSpecs = <DeviceSpecs>[];
   for(String name in allSpecs.keys) {
     Map<String, String> specs = allSpecs[name];
-    // if(specs.containsKey('debug-port')) {
-    //   int debugPort = int.parse(specs['debug-port']);
-    //   specs['debug-port'] = await findAvailablePort(debugPort);
-    // } else {
-    //   specs['debug-port'] = await findNextAvailablePort();
-    // }
-    // print(specs['debug-port']);
-    specs['debug-port'] = await findNextAvailablePort();
+    if(!specs.containsKey('debug-port')) {
+      specs['debug-port'] = await findNextAvailablePort();
+    }
     devicesSpecs.add(
       new DeviceSpecs(
         nickName: name,
@@ -312,6 +315,7 @@ Future<List<DeviceSpecs>> constructAllDeviceSpecs(dynamic allSpecs) async {
   return devicesSpecs;
 }
 
+/// Find all matched devices for each device specs
 Map<DeviceSpecs, Set<Device>> findIndividualMatches(
   List<DeviceSpecs> devicesSpecs,
   List<Device> devices) {
@@ -328,6 +332,8 @@ Map<DeviceSpecs, Set<Device>> findIndividualMatches(
   return individualMatches;
 }
 
+/// Find a mapping that matches every device specs to a device. If such
+/// mapping is not found, return false, otherwise return true.
 bool findAllMatches(
   int order,
   List<DeviceSpecs> devicesSpecs,
@@ -353,6 +359,8 @@ bool findAllMatches(
   return false;
 }
 
+/// Store the specs to device mapping as a system temporary file.  The file
+/// stores device nickname as well as device id and debug-port for each device
 Future<Null> storeMatches(Map<DeviceSpecs, Device> anyMatch) async {
   Map<String, dynamic> matchesData = new Map<String, dynamic>();
   anyMatch.forEach((DeviceSpecs specs, Device device) {
@@ -433,6 +441,8 @@ Future<int> startMultiDeviceApps(MultiDriveCommand command) async {
   return 0;
 }
 
+/// DeviceSpecs class stores all information for each device specs and
+/// provide functions to detect matched devices
 class DeviceSpecs {
   DeviceSpecs(
     {
