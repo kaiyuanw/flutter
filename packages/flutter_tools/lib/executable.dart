@@ -20,6 +20,7 @@ import 'src/commands/daemon.dart';
 import 'src/commands/devices.dart';
 import 'src/commands/doctor.dart';
 import 'src/commands/drive.dart';
+import 'src/commands/multi_drive.dart';
 import 'src/commands/install.dart';
 import 'src/commands/listen.dart';
 import 'src/commands/logs.dart';
@@ -63,6 +64,7 @@ Future<Null> main(List<String> args) async {
     ..addCommand(new DevicesCommand())
     ..addCommand(new DoctorCommand())
     ..addCommand(new DriveCommand())
+    ..addCommand(new MultiDriveCommand())
     ..addCommand(new InstallCommand())
     ..addCommand(new ListenCommand())
     ..addCommand(new LogsCommand())

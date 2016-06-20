@@ -52,6 +52,9 @@ class AndroidDevice extends Device {
   final String modelID;
   final String deviceCodeName;
 
+  @override
+  String toString() => name;
+  
   Map<String, String> _properties;
   bool _isLocalEmulator;
   TargetPlatform _platform;
